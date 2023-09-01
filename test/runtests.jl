@@ -1,5 +1,6 @@
 using IdentificationDebugger
 using Test
+using ADNLPModels, JSOSolvers
 
 using IdentificationDebugger: partial_problem, lower_bound, upper_bound, calculate_objective
 
@@ -21,6 +22,16 @@ PP = partial_problem(IP, Val((:a,)))
 @test lower_bound(PP) == [-Inf]
 @test upper_bound(PP) == [Inf]
 @test calculate_objective(PP, [parameters.a.known_value]) == 0
+
+function solver_ADNLP(objective, lb, ub, x0)
+    model = ADNLPModel(objective, x0, lb, ub)
+    stats = tron(model)
+    converged = stats.solution_reliable
+    x = stats.solution
+    (; x, converged)
+end
+
+@test check_identification(solver_ADNLP, IP)
 
 
 ## NOTE add JET to the test environment, then uncomment

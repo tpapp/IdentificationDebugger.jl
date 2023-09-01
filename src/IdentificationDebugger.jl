@@ -3,12 +3,15 @@ Placeholder for a short summary about IdentificationDebugger.
 """
 module IdentificationDebugger
 
-export parameter, identification_problem
+export parameter, identification_problem, check_identification
 
 using ArgCheck: @argcheck
 using DocStringExtensions: SIGNATURES
 using FillArrays: Fill
+using Logging: @error
 using TransformVariables: dimension, transform, inverse, as, asℝ
+using Random: default_rng
+using Statistics: mean
 
 ###
 ### parameters
@@ -25,9 +28,9 @@ _default_transformation(a::Real) = asℝ
 
 _default_transformation(a::AbstractArray) = as(Array, size(a)...)
 
-_default_lower_bound(transformation) = Fill(-Inf, dimension(transformation))
+_default_lower_bound(transformation) = fill(-Inf, dimension(transformation))
 
-_default_upper_bound(transformation) = Fill(Inf, dimension(transformation))
+_default_upper_bound(transformation) = fill(Inf, dimension(transformation))
 
 "$(SIGNATURES)"
 function parameter(known_value;
@@ -62,17 +65,26 @@ end
 ### identification problem framework
 ###
 
-Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO}
+mean_abs2(x::AbstractVector, y::AbstractVector) = mean(((x, y),) -> abs2(x - y), zip(x, y))
+
+Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO,TN,}
     parameters::TP
     moment_calculator::TM
     objective::TO
+    solution_norm::TN
+    solution_tol::Float64
+    random_x0_count::Int
+    minimum_convergence_ratio::Float64
 end
 
 "$(SIGNATURES)"
-function identification_problem(moment_calculator, parameters::NamedTuple)
+function identification_problem(moment_calculator, parameters::NamedTuple;
+                                solution_norm = mean_abs2, solution_tol = 1e-4,
+                                random_x0_count = 10, minimum_convergence_ratio = 1.0)
     moments = moment_calculator(map(p -> p.known_value, parameters))
     objective = LeastSquaresObjective(moments)
-    IdentificationProblem(; parameters, moment_calculator, objective)
+    IdentificationProblem(; parameters, moment_calculator, objective, solution_norm,
+                          solution_tol, random_x0_count, minimum_convergence_ratio)
 end
 
 function free_parameters(problem::IdentificationProblem, free_variables::Val{S}) where S
@@ -122,6 +134,11 @@ lower_bound(pp::PartialProblem{S}) where S = free_lower_bound(pp.parent_problem,
 
 upper_bound(pp::PartialProblem{S}) where S = free_upper_bound(pp.parent_problem, Val(S))
 
+function known_x(pp::PartialProblem{S}) where S
+    (; parent_problem, transformation) = pp
+    inverse(transformation, map(p -> p.known_value, free_parameters(parent_problem, Val(S))))
+end
+
 function calculate_objective(pp::PartialProblem{S}, x::AbstractVector) where {S}
     (; parent_problem, transformation) = pp
     _known = known_values(parent_problem, Val(S))
@@ -129,6 +146,115 @@ function calculate_objective(pp::PartialProblem{S}, x::AbstractVector) where {S}
     (; objective, moment_calculator) = parent_problem
     moments =  moment_calculator(merge(_free, _known))
     objective(moments)
+end
+
+###
+###
+###
+
+function random_starting_point(lower_bound::AbstractVector, upper_bound::AbstractVector;
+                               rng = default_rng())
+    # NOTE: scaling is assumed to be more or less [-2, -2] for infinite intervals, x+[0,2]
+    # etc for finite ones
+    @argcheck length(lower_bound) == length(upper_bound)
+    function _r(x, y)
+        @argcheck !isnan(x) && !isnan(y)
+        @argcheck x ≤ y
+        if x == y
+            x
+        elseif isfinite(x) && isfinite(y)
+            rand(rng) * (y - x) + x
+        elseif isfinite(x)
+            abs(randn(rng)) + x
+        elseif isfinite(y)
+            y - abs(randn(rng))
+        else
+            randn(rng)
+        end
+    end
+    map(_r, lower_bound, upper_bound)
+end
+
+const SOLVER_DOCS = """
+The solver is a function which will be called as
+
+```julia
+(; converged, x) = solver(f, lb, ub, x0)
+```
+where `converged` should be a boolean indicating convergence and `x` is the solution.
+"""
+
+function solve_and_status(pp::PartialProblem, solver, x0;
+                          lb = lower_bound(pp), ub = upper_bound(pp),
+                          catch_errors = true)
+
+    (; solution_norm, solution_tol) = pp.parent_problem
+    x̃ = known_x(pp)
+    try
+        (; converged, x) = solver(Base.Fix1(calculate_objective, pp), lb, ub, x0)
+        Δ = solution_norm(x̃, x)
+        status = if !converged
+            :nonconvergence
+        elseif Δ ≤ solution_tol
+            :convergence_correct
+        else
+            :convergence_incorrect
+        end
+        (; x0, status)
+    catch e
+        if catch_errors
+            @warn "error message" sprint(showerror, e)
+            (; x0, status = :error)
+        else
+            rethrow(e)
+        end
+    end
+end
+
+function solve_and_check(pp::PartialProblem{S}, solver; catch_errors = true) where S
+    lb = lower_bound(pp)
+    ub = upper_bound(pp)
+    (; random_x0_count::Int, minimum_convergence_ratio::Float64) = pp.parent_problem
+    # NOTE parallelize this step
+    s = [solve_and_status(pp, solver, random_starting_point(lb, ub); lb, ub, catch_errors)
+         for _ in 1:pp.parent_problem.random_x0_count]
+    s_e = findfirst(s -> s.status ≡ :error, s)
+    if s_e ≢ nothing
+        @error "starting point errored" S s[s_e].x0
+        error("at least one starting point errored, check logs")
+    end
+    convergence_ratio = mean(s -> s.status ≡ :convergence_correct, s)
+    ok = convergence_ratio ≥ minimum_convergence_ratio
+    if !ok
+        @error "did not reach expected converge" convergence_ratio minimum_convergence_ratio
+    end
+    ok
+end
+
+"""
+$(SIGNATURES)
+
+Solve the given problem step by step, checking that the known parameters are identified.
+
+## Solver interface
+
+$(SOLVER_DOCS)
+"""
+function check_identification(solver, problem::IdentificationProblem; catch_errors = true)
+    known_variables = keys(problem.parameters)
+    free_variables = ()
+    while !isempty(known_variables)
+        v, known_variables... = known_variables
+        free_variables = (free_variables..., v)
+        pp = partial_problem(problem, Val(free_variables)) # non-inferrable, but that's ok
+        @info "solving partial model" free_variables
+        ok = solve_and_check(pp, solver; catch_errors)
+        if !ok
+            error("solution failed when adding variable $(v)")
+        end
+    end
+    @info "model is identified correctly"
+    true
 end
 
 end # module
