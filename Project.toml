@@ -1,0 +1,19 @@
+name = "IdentificationDebugger"
+uuid = "b4f41079-1cc8-4c38-936d-b9f669901cb6"
+authors = ["Tamás K. Papp <tkpapp@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+ArgCheck = "dce04be8-c92d-5529-be00-80e4d2c0e197"
+DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
+FillArrays = "1a297f60-69ca-5386-bcde-b61e274b549b"
+TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
