@@ -32,7 +32,18 @@ _default_lower_bound(transformation) = fill(-Inf, dimension(transformation))
 
 _default_upper_bound(transformation) = fill(Inf, dimension(transformation))
 
-"$(SIGNATURES)"
+"""
+$(SIGNATURES)
+
+Description of a parameter. The exercise is to recover the `known_value` in a simulated
+setting.
+
+# Keyword parameters
+
+- `transformation`: a transformation from ``ℝⁿ``, if applicable, implicitly also provides
+  the dimension `n`. Defaults to the identity, reshaped.
+- `lower_bound`, `upper_bound`: lower- and upper bound in ``ℝⁿ`` for the estimation
+"""
 function parameter(known_value;
                    transformation = _default_transformation(known_value),
                    lower_bound::AbstractVector = _default_lower_bound(transformation),
@@ -61,30 +72,20 @@ function (lso::LeastSquaresObjective)(model_moments::NamedTuple{TT}) where TT
     ls_diff(m, target_moments)
 end
 
-###
-### identification problem framework
-###
+####
+#### identification problem framework
+####
 
 mean_abs2(x::AbstractVector, y::AbstractVector) = mean(((x, y),) -> abs2(x - y), zip(x, y))
 
 Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO,TN,}
     parameters::TP
-    moment_calculator::TM
+    moments_and_constraint_calculator::TM
     objective::TO
     solution_norm::TN
     solution_tol::Float64
     random_x0_count::Int
     minimum_convergence_ratio::Float64
-end
-
-"$(SIGNATURES)"
-function identification_problem(moment_calculator, parameters::NamedTuple;
-                                solution_norm = mean_abs2, solution_tol = 1e-4,
-                                random_x0_count = 10, minimum_convergence_ratio = 1.0)
-    moments = moment_calculator(map(p -> p.known_value, parameters))
-    objective = LeastSquaresObjective(moments)
-    IdentificationProblem(; parameters, moment_calculator, objective, solution_norm,
-                          solution_tol, random_x0_count, minimum_convergence_ratio)
 end
 
 function free_parameters(problem::IdentificationProblem, free_variables::Val{S}) where S
@@ -110,6 +111,19 @@ end
 function known_values(problem::IdentificationProblem, free_variables::Val{S}) where S
     map(p -> p.known_value, Base.structdiff(problem.parameters, NamedTuple{S}))
 end
+
+
+"$(SIGNATURES)"
+function identification_problem(moments_and_constraint_calculator,
+                                parameters::NamedTuple,
+                                solution_norm = mean_abs2, solution_tol = 1e-4,
+                                random_x0_count = 10, minimum_convergence_ratio = 1.0)
+    moments, constraint = moments_and_constraint_calculator(map(p -> p.known_value, parameters))
+    objective = LeastSquaresObjective(moments)
+    IdentificationProblem(; parameters, moments_and_constraint_calculator, objective, solution_norm,
+                          solution_tol, random_x0_count, minimum_convergence_ratio)
+end
+
 
 ###
 ### partial problem we pass to optimizers
@@ -139,13 +153,13 @@ function known_x(pp::PartialProblem{S}) where S
     inverse(transformation, map(p -> p.known_value, free_parameters(parent_problem, Val(S))))
 end
 
-function calculate_objective(pp::PartialProblem{S}, x::AbstractVector) where {S}
+function calculate_objective_and_constraint(pp::PartialProblem{S}, x::AbstractVector) where {S}
     (; parent_problem, transformation) = pp
     _known = known_values(parent_problem, Val(S))
     _free = transform(transformation, x)
-    (; objective, moment_calculator) = parent_problem
-    moments =  moment_calculator(merge(_free, _known))
-    objective(moments)
+    (; objective, moments_and_constraint_calculator) = parent_problem
+    moments, constraint =  moments_and_constraint_calculator(merge(_free, _known))
+    objective(moments), constraint
 end
 
 ###
@@ -179,7 +193,7 @@ const SOLVER_DOCS = """
 The solver is a function which will be called as
 
 ```julia
-(; converged, x) = solver(f, lb, ub, x0)
+(; converged, x) = solver(f, x0, lb, ub, lc, uc)
 ```
 where `converged` should be a boolean indicating convergence and `x` is the solution.
 """
@@ -191,7 +205,7 @@ function solve_and_status(pp::PartialProblem, solver, x0;
     (; solution_norm, solution_tol) = pp.parent_problem
     x̃ = known_x(pp)
     try
-        (; converged, x) = solver(Base.Fix1(calculate_objective, pp), lb, ub, x0)
+        (; converged, x) = solver(Base.Fix1(calculate_objective, pp), x0, lb, ub, lc, uc)
         Δ = solution_norm(x̃, x)
         status = if !converged
             :nonconvergence
