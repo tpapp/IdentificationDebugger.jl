@@ -3,7 +3,7 @@ Placeholder for a short summary about IdentificationDebugger.
 """
 module IdentificationDebugger
 
-export parameter, endogeneous_parameter, identification_problem, check_identification
+export known_parameter, endogeneous_parameter, identification_problem, check_identification
 
 using ArgCheck: @argcheck
 using DocStringExtensions: SIGNATURES
@@ -40,8 +40,8 @@ _default_upper_bound(transformation) = fill(Inf, dimension(transformation))
 """
 $(SIGNATURES)
 
-Description of a parameter. The exercise is to recover the `known_value` in a simulated
-setting.
+Description of a known parameter. The exercise is to recover the `known_value` in a
+simulated setting.
 
 # Keyword parameters
 
@@ -49,7 +49,7 @@ setting.
   the dimension `n`. Defaults to the identity, reshaped.
 - `lower_bound`, `upper_bound`: lower- and upper bound in ``ℝⁿ`` for the estimation
 """
-function parameter(known_value;
+function known_parameter(known_value;
                    transformation = _default_transformation(known_value),
                    lower_bound::AbstractVector = _default_lower_bound(transformation),
                    upper_bound::AbstractVector = _default_upper_bound(transformation))

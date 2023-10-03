@@ -3,7 +3,7 @@ using Test, TransformVariables
 
 using IdentificationDebugger: partial_problem, lower_bound, upper_bound, calculate_objcons
 
-parameters = (a = parameter(2.0), b = parameter([1.0, 3.0]),
+parameters = (a = known_parameter(2.0), b = known_parameter([1.0, 3.0]),
               c = endogeneous_parameter(as(Array, 3)))
 
 "Matrix we use for tests, all that matters is that it is not singular & not block diagonal."
