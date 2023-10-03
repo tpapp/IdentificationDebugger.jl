@@ -96,6 +96,9 @@ end
 
 mean_abs2(x::AbstractVector, y::AbstractVector) = mean(((x, y),) -> abs2(x - y), zip(x, y))
 
+"The type we accept for return values of `moments_and_constraint_calculator`."
+const MC_TYPE = Tuple{NamedTuple,AbstractVector}
+
 Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO,TN,}
     parameters::TP
     moments_and_constraint_calculator::TM
@@ -146,7 +149,7 @@ $(SIGNATURES)
 function solve_endogeneous_parameters!(problem::IdentificationProblem,
                                       endogeneous_variables::Val{S}) where S
     isempty(S) && return problem
-    (; moments_and_constraint_calculator, parameters) = problem
+    (; moments_and_constraint_calculator, parameters, solution_tol) = problem
     N = free_dimension(problem, endogeneous_variables)
     transformation = free_transformation(problem, endogeneous_variables)
     lb = free_lower_bound(problem, endogeneous_variables)
@@ -154,11 +157,11 @@ function solve_endogeneous_parameters!(problem::IdentificationProblem,
     κ = known_values(problem, endogeneous_variables)
     function F(x)
         θ = transform(transformation, x)
-        moments_and_constraint_calculator(merge(κ, θ))[2]
+        (moments_and_constraint_calculator(merge(κ, θ))::MC_TYPE)[2]
     end
     x0 = zeros(N)
     PF = ADNLSModel(F, x0, length(F(x0)), lb, ub)
-    stats = tron(PF)
+    stats = tron(PF; Fatol = solution_tol)
     @argcheck stats.solution_reliable
     θ = transform(transformation, stats.solution)
     for (k, v) in pairs(θ)
@@ -177,8 +180,8 @@ function identification_problem(moments_and_constraint_calculator,
     solve_endogeneous_parameters!(problem0,
                                   Val(classify_parameters(problem0).endogeneous))
     moments, constraint = moments_and_constraint_calculator(map(p -> p.known_value,
-                                                                problem0.parameters))
-    @argcheck all(constraint .≤ 1e-3) # FIXME don't hardcode this, use solver's tolerance
+                                                                problem0.parameters))::MC_TYPE
+    @argcheck all(abs.(constraint) .≤ solution_tol)
     objective = LeastSquaresObjective(moments)
     IdentificationProblem(; parameters, moments_and_constraint_calculator, objective,
                           solution_norm, solution_tol, random_x0_count,
@@ -219,7 +222,7 @@ function calculate_objcons(pp::PartialProblem{S}, x::AbstractVector) where {S}
     _known = known_values(parent_problem, Val(S))
     _free = transform(transformation, x)
     (; objective, moments_and_constraint_calculator) = parent_problem
-    moments, constraint =  moments_and_constraint_calculator(merge(_free, _known))
+    moments, constraint =  moments_and_constraint_calculator(merge(_free, _known))::MC_TYPE
     pushfirst!(copy(constraint), objective(moments))
 end
 
