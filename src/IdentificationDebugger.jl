@@ -222,7 +222,8 @@ function calculate_objcons(pp::PartialProblem{S}, x::AbstractVector) where {S}
     _known = known_values(parent_problem, Val(S))
     _free = transform(transformation, x)
     (; objective, moments_and_constraint_calculator) = parent_problem
-    moments, constraint =  moments_and_constraint_calculator(merge(_free, _known))::MC_TYPE
+    θ = merge(_free, _known)
+    moments, constraint =  moments_and_constraint_calculator(θ)::MC_TYPE
     pushfirst!(copy(constraint), objective(moments))
 end
 
