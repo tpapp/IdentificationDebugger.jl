@@ -99,15 +99,12 @@ mean_abs2(x::AbstractVector, y::AbstractVector) = mean(((x, y),) -> abs2(x - y),
 "The type we accept for return values of `moments_and_constraint_calculator`."
 const MC_TYPE = Tuple{NamedTuple,AbstractVector}
 
-Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO,TN,}
+Base.@kwdef struct IdentificationProblem{TP<:NamedTuple,TM,TO}
     parameters::TP
     moments_and_constraint_calculator::TM
     constraint_dimension::Int = 0
     objective::TO = nothing
-    solution_norm::TN = mean_abs2
     solution_tol::Float64 = 1e-4
-    random_x0_count::Int = 10
-    minimum_convergence_ratio::Float64 = 1.0
 end
 
 function classify_parameters(problem::IdentificationProblem)
@@ -172,9 +169,8 @@ end
 
 "$(SIGNATURES)"
 function identification_problem(moments_and_constraint_calculator,
-                                parameters::NamedTuple,
-                                solution_norm = mean_abs2, solution_tol = 1e-4,
-                                random_x0_count = 10, minimum_convergence_ratio = 1.0)
+                                parameters::NamedTuple; solution_tol = 1e-4)
+    @argcheck solution_tol > 0
     parameters = deepcopy(parameters) # don't modify caller's variables
     problem0 = IdentificationProblem(; parameters, moments_and_constraint_calculator)
     solve_endogeneous_parameters!(problem0,
@@ -184,9 +180,7 @@ function identification_problem(moments_and_constraint_calculator,
     @argcheck all(abs.(constraint) .≤ solution_tol)
     objective = LeastSquaresObjective(moments)
     IdentificationProblem(; parameters, moments_and_constraint_calculator, objective,
-                          solution_norm, solution_tol, random_x0_count,
-                          minimum_convergence_ratio,
-                          constraint_dimension = length(constraint))
+                          solution_tol, constraint_dimension = length(constraint))
 end
 
 ###
@@ -242,7 +236,7 @@ function random_starting_point(lower_bound::AbstractVector, upper_bound::Abstrac
         if x == y
             x
         elseif isfinite(x) && isfinite(y)
-            rand(rng) * (y - x) + x
+            clamp(rand(rng) * (y - x) + x, x, y) # clamp for numerical error
         elseif isfinite(x)
             abs(randn(rng)) + x
         elseif isfinite(y)
@@ -256,8 +250,8 @@ end
 
 function solve_and_status(pp::PartialProblem, x0;
                           lb = lower_bound(pp), ub = upper_bound(pp),
-                          catch_errors = true)
-    (; solution_norm, solution_tol, constraint_dimension) = pp.parent_problem
+                          catch_errors = true, solution_norm)
+    (; solution_tol, constraint_dimension) = pp.parent_problem
     F = objcons_nlpmodel(Base.Fix1(calculate_objcons, pp); x0, lvar = lb, uvar = ub)
     x̃ = known_x(pp)
     try
@@ -282,33 +276,44 @@ function solve_and_status(pp::PartialProblem, x0;
     end
 end
 
-function solve_and_check(pp::PartialProblem{S}; catch_errors = true) where S
+function solution_convergence_ratio(pp::PartialProblem{S}; catch_errors = true,
+                         solution_norm, random_x0_count) where S
     lb = lower_bound(pp)
     ub = upper_bound(pp)
-    (; random_x0_count::Int, minimum_convergence_ratio::Float64) = pp.parent_problem
     # NOTE parallelize this step
-    s = [solve_and_status(pp, random_starting_point(lb, ub); lb, ub, catch_errors)
-         for _ in 1:pp.parent_problem.random_x0_count]
+    s = [solve_and_status(pp, random_starting_point(lb, ub); lb, ub, catch_errors, solution_norm)
+         for _ in 1:random_x0_count]
     s_e = findfirst(s -> s.status ≡ :error, s)
     if s_e ≢ nothing
         @error "starting point errored" S s[s_e].x0
         error("at least one starting point errored, check logs")
     end
-    convergence_ratio = mean(s -> s.status ≡ :convergence_correct, s)
-    ok = convergence_ratio ≥ minimum_convergence_ratio
-    if !ok
-        @error "did not reach expected converge" convergence_ratio minimum_convergence_ratio
-    end
-    ok
+    mean(s -> s.status ≡ :convergence_correct, s)
 end
 
 """
 $(SIGNATURES)
 
 Solve the given problem step by step, checking that the known parameters are identified.
+
+# Keyword arguments (width defaults)
+
+- `catch_errors = true`: errors in the objective function are caught and treated as
+  non-convergence
+
+- `solution_norm = mean_abs2`: the solution nom
+
+- `random_x0_count = 10`: random points to evaluate convergence
+
+- `minimum_convergence_ratio = 1.0`: stop below this.
 """
-function check_identification(problem::IdentificationProblem; catch_errors = true)
+function check_identification(problem::IdentificationProblem; catch_errors = true,
+                              solution_norm = mean_abs2,
+                              random_x0_count = 10,
+                              minimum_convergence_ratio = 1.0)
     (; exogeneous, endogeneous) = classify_parameters(problem)
+    @argcheck random_x0_count > 0
+    @argcheck 0 ≤ minimum_convergence_ratio ≤ 1.0
     known_parameters = exogeneous
     free_parameters = endogeneous
     while !isempty(known_parameters)
@@ -316,9 +321,10 @@ function check_identification(problem::IdentificationProblem; catch_errors = tru
         free_parameters = (free_parameters..., v)
         pp = partial_problem(problem, Val(free_parameters)) # non-inferrable, but that's ok
         @info "solving partial model" free_parameters
-        ok = solve_and_check(pp; catch_errors)
-        if !ok
-            error("solution failed when adding variable $(v)")
+        convergence_ratio = solution_convergence_ratio(pp; catch_errors, solution_norm, random_x0_count)
+        if convergence_ratio < minimum_convergence_ratio
+            @error "insufficient convergence" last_variable = v convergence_ratio
+            error("insufficient convergence")
         end
     end
     @info "model is identified correctly"
