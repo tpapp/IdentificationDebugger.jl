@@ -252,43 +252,44 @@ function solve_and_status(pp::PartialProblem, x0;
                           lb = lower_bound(pp), ub = upper_bound(pp),
                           catch_errors = true, solution_norm)
     (; solution_tol, constraint_dimension) = pp.parent_problem
-    F = objcons_nlpmodel(Base.Fix1(calculate_objcons, pp); x0, lvar = lb, uvar = ub)
+    oc = Base.Fix1(calculate_objcons, pp)
+    F = objcons_nlpmodel(oc; x0, lvar = lb, uvar = ub)
     x̃ = known_x(pp)
     try
         stats = percival(F)
         x = stats.solution
         Δ = solution_norm(x̃, x)
+        oc_x = oc(x)
+        objective = oc_x[1]
+        constraints = oc_x[2:end]
         status = if !stats.solution_reliable
             :nonconvergence
-        elseif Δ ≤ solution_tol
+        elseif Δ ≤ solution_tol && maximum(abs, constraints) ≤ solution_tol
             :convergence_correct
         else
             :convergence_incorrect
         end
-        (; x, status)
+        (; status, x0, x, objective, constraints)
     catch e
         if catch_errors
             @warn "error message" sprint(showerror, e)
-            (; x0, status = :error)
+            (; status = :error, x0, objective = nothing, constraints = nothing)
         else
             rethrow(e)
         end
     end
 end
 
-function solution_convergence_ratio(pp::PartialProblem{S}; catch_errors = true,
+function solutions_from_random_points(pp::PartialProblem{S}; catch_errors = true,
                          solution_norm, random_x0_count) where S
     lb = lower_bound(pp)
     ub = upper_bound(pp)
     # NOTE parallelize this step
-    s = [solve_and_status(pp, random_starting_point(lb, ub); lb, ub, catch_errors, solution_norm)
-         for _ in 1:random_x0_count]
-    s_e = findfirst(s -> s.status ≡ :error, s)
-    if s_e ≢ nothing
-        @error "starting point errored" S s[s_e].x0
-        error("at least one starting point errored, check logs")
-    end
-    mean(s -> s.status ≡ :convergence_correct, s)
+    [begin
+         x0 = random_starting_point(lb, ub)
+         solve_and_status(pp, x0; lb, ub, catch_errors, solution_norm)
+     end
+     for _ in 1:random_x0_count]
 end
 
 """
@@ -316,19 +317,22 @@ function check_identification(problem::IdentificationProblem; catch_errors = tru
     @argcheck 0 ≤ minimum_convergence_ratio ≤ 1.0
     known_parameters = exogeneous
     free_parameters = endogeneous
+    results = []
     while !isempty(known_parameters)
         v, known_parameters... = known_parameters
         free_parameters = (free_parameters..., v)
         pp = partial_problem(problem, Val(free_parameters)) # non-inferrable, but that's ok
         @info "solving partial model" free_parameters
-        convergence_ratio = solution_convergence_ratio(pp; catch_errors, solution_norm, random_x0_count)
+        solutions = solutions_from_random_points(pp; catch_errors, solution_norm, random_x0_count)
+        convergence_ratio = mean(s -> s.status ≡ :convergence_correct, solutions)
         if convergence_ratio < minimum_convergence_ratio
             @error "insufficient convergence" last_variable = v convergence_ratio
             error("insufficient convergence")
         end
+        push!(results, (added_variable = v, pp.transformation, known_parameters, solutions))
     end
     @info "model is identified correctly"
-    true
+    results
 end
 
 end # module
