@@ -28,8 +28,7 @@ PP = partial_problem(IP, Val((:a,)))
 @test upper_bound(PP) == [Inf]
 @test maximum(abs, calculate_objcons(PP, [parameters.a.known_value])) ≤ 1e-8
 
-
-@test check_identification(IP)
+@test check_identification(IP)[1] isa NamedTuple
 
 
 ## NOTE add JET to the test environment, then uncomment
