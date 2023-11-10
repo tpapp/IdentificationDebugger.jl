@@ -20,6 +20,7 @@ TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff"
 ArgCheck = "2"
 DocStringExtensions = "0.9"
 FillArrays = "1"
+ObjConsNLPModels = "0.1"
 TransformVariables = "0.8"
 julia = "1.9"
 
